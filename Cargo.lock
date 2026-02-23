@@ -148,16 +148,17 @@ dependencies = [
  "bootloader-boot-config",
  "bootloader_api",
  "conquer-once",
+ "elf",
+ "kernel-elf-loader",
  "log",
  "noto-sans-mono-bitmap 0.2.0",
  "rand",
+ "rand_core",
  "rand_hc",
  "raw-cpuid",
  "spinning_top",
  "uart_16550 0.3.2",
- "usize_conversions",
  "x86_64 0.15.2",
- "xmas-elf",
 ]
 
 [[package]]
@@ -242,6 +243,12 @@ name = "critical-section"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6548a0ad5d2549e111e1f6a11a6c2e2d00ce6a3dafe22948d67c2b443f775e52"
+
+[[package]]
+name = "elf"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55dd888a213fc57e957abf2aa305ee3e8a28dbe05687a251f33b637cd46b0070"
 
 [[package]]
 name = "errno"
@@ -366,6 +373,15 @@ name = "itoa"
 version = "1.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62b02a5381cc465bd3041d84623d0fa3b66738b52b8e2fc3bab8ad63ab032f4a"
+
+[[package]]
+name = "kernel-elf-loader"
+version = "0.1.0"
+dependencies = [
+ "elf",
+ "log",
+ "rand_core",
+]
 
 [[package]]
 name = "libc"
@@ -1073,18 +1089,3 @@ dependencies = [
  "rustversion",
  "volatile",
 ]
-
-[[package]]
-name = "xmas-elf"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d29b4d8e7beaceb4e77447ba941a7600d23d0319ab52da0461abea214832d5a"
-dependencies = [
- "zero",
-]
-
-[[package]]
-name = "zero"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fe21bcc34ca7fe6dd56cc2cb1261ea59d6b93620215aefb5ea6032265527784"

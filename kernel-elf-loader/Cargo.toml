@@ -1,0 +1,11 @@
+[package]
+name = "kernel-elf-loader"
+version = "0.1.0"
+edition = "2024"
+description = "Platform-agnostic ELF kernel loader for bootloaders"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+elf = { version = "0.8", default-features = false }
+rand_core = { version = "0.6", default-features = false }
+log = "0.4"

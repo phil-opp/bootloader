@@ -12,6 +12,7 @@ members = [
     "api",
     "common",
     "common/config",
+    "kernel-elf-loader",
     "uefi",
     "bios/boot_sector",
     "bios/stage-*",
