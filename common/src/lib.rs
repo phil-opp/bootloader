@@ -1,8 +1,8 @@
 #![cfg_attr(not(test), no_std)]
-#![feature(step_trait)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::legacy_memory_region::{LegacyFrameAllocator, LegacyMemoryRegion};
+use crate::x86_bridge::{IdentityMappedAccess, X86FrameAllocator, X86PageSize, X86PageTable};
 use bootloader_api::{
     BootInfo, BootloaderConfig,
     config::Mapping,
@@ -10,16 +10,17 @@ use bootloader_api::{
 };
 use bootloader_boot_config::{BootConfig, LevelFilter};
 use core::{alloc::Layout, arch::asm, mem::MaybeUninit, slice};
-use level_4_entries::UsedLevel4Entries;
-use usize_conversions::FromUsize;
+use kernel_elf_loader::{
+    self as kel, AddressSpace,
+    loader::{KernelPlacement, Loader, RegionPlacement},
+};
 use x86_64::{
     PhysAddr, VirtAddr,
     structures::paging::{
-        FrameAllocator, Mapper, OffsetPageTable, Page, PageSize, PageTableFlags, PageTableIndex,
-        PhysFrame, Size2MiB, Size4KiB, page_table::PageTableLevel,
+        FrameAllocator, Mapper, OffsetPageTable, Page, PageTableFlags, PageTableIndex,
+        PhysFrame, page_table::PageTableLevel,
     },
 };
-use xmas_elf::ElfFile;
 
 /// Provides a function to gather entropy and build a RNG.
 mod entropy;
@@ -28,14 +29,12 @@ pub mod framebuffer;
 mod gdt;
 /// Provides a frame allocator based on a BIOS or UEFI memory map.
 pub mod legacy_memory_region;
-/// Provides a type to keep track of used entries in a level 4 page table.
-pub mod level_4_entries;
-/// Implements a loader for the kernel ELF binary.
-pub mod load_kernel;
 /// Provides a logger that logs output as text in various formats.
 pub mod logger;
 /// Provides a type that logs output as text to a Serial Being port.
 pub mod serial;
+/// Bridge between x86_64 types and kernel-elf-loader traits.
+pub mod x86_bridge;
 
 const PAGE_SIZE: u64 = 4096;
 
@@ -91,30 +90,50 @@ pub struct RawFrameBufferInfo {
     pub info: FrameBufferInfo,
 }
 
+/// Parsed kernel ELF with embedded bootloader configuration.
 pub struct Kernel<'a> {
-    pub elf: ElfFile<'a>,
+    /// The bootloader configuration extracted from the kernel ELF.
     pub config: BootloaderConfig,
-    pub start_address: *const u8,
-    pub len: usize,
+    /// Raw kernel ELF bytes.
+    pub elf_bytes: &'a [u8],
 }
 
 impl<'a> Kernel<'a> {
     pub fn parse(kernel_slice: &'a [u8]) -> Self {
-        let kernel_elf = ElfFile::new(kernel_slice).unwrap();
+        // Use the `elf` crate to extract the .bootloader-config section.
+        let elf = elf::ElfBytes::<elf::endian::AnyEndian>::minimal_parse(kernel_slice)
+            .expect("failed to parse kernel ELF");
         let config = {
-            let section = kernel_elf
-                .find_section_by_name(".bootloader-config")
-                .expect("bootloader config section not found; kernel must be compiled against bootloader_api");
-            let raw = section.raw_data(&kernel_elf);
+            let section = elf
+                .section_header_by_name(".bootloader-config")
+                .expect("failed to find .bootloader-config section")
+                .expect("kernel must be compiled against bootloader_api");
+            let (raw, _compression) = elf
+                .section_data(&section)
+                .expect("failed to read .bootloader-config data");
             BootloaderConfig::deserialize(raw)
                 .expect("kernel was compiled with incompatible bootloader_api version")
         };
         Kernel {
-            elf: kernel_elf,
             config,
-            start_address: kernel_slice.as_ptr(),
-            len: kernel_slice.len(),
+            elf_bytes: kernel_slice,
         }
+    }
+}
+
+/// Convert a `bootloader_api::config::Mapping` to a `kernel_elf_loader::RegionPlacement`.
+fn mapping_to_placement(mapping: Mapping) -> RegionPlacement {
+    match mapping {
+        Mapping::Dynamic => RegionPlacement::Auto,
+        Mapping::FixedAddress(addr) => RegionPlacement::Fixed(kel::VirtAddr::new(addr)),
+    }
+}
+
+/// Convert a `bootloader_api::config::Mapping` to a `kernel_elf_loader::KernelPlacement`.
+fn mapping_to_kernel_placement(mapping: Mapping) -> KernelPlacement {
+    match mapping {
+        Mapping::Dynamic => KernelPlacement::Auto,
+        Mapping::FixedAddress(addr) => KernelPlacement::Fixed(kel::VirtAddr::new(addr)),
     }
 }
 
@@ -154,88 +173,259 @@ where
     switch_to_kernel(page_tables, mappings, boot_info);
 }
 
-/// Sets up mappings for a kernel stack and the framebuffer.
+/// Sets up mappings for the kernel, kernel stack, framebuffer, ramdisk, and physical memory.
 ///
-/// The `kernel_bytes` slice should contain the raw bytes of the kernel ELF executable. The
-/// `frame_allocator` argument should be created from the memory map. The `page_tables`
-/// argument should point to the bootloader and kernel page tables. The function tries to parse
-/// the ELF file and create all specified mappings in the kernel-level page table.
-///
-/// The `framebuffer_addr` and `framebuffer_size` fields should be set to the start address and
-/// byte length the pixel-based framebuffer. These arguments are required because the functions
-/// maps this framebuffer in the kernel-level page table, unless the `map_framebuffer` config
-/// option is disabled.
-///
-/// This function reacts to unexpected situations (e.g. invalid kernel ELF file) with a panic, so
-/// errors are not recoverable.
+/// Uses `kernel_elf_loader::Loader` for the kernel ELF loading and region mapping,
+/// while x86_64-specific operations (context switch identity mapping, GDT, recursive
+/// page table) are done directly.
 pub fn set_up_mappings<I, D>(
     kernel: Kernel,
     frame_allocator: &mut LegacyFrameAllocator<I, D>,
     page_tables: &mut PageTables,
     framebuffer: Option<&RawFrameBufferInfo>,
-    config: &BootloaderConfig,
+    _config: &BootloaderConfig,
     system_info: &SystemInfo,
 ) -> Mappings
 where
     I: ExactSizeIterator<Item = D> + Clone,
     D: LegacyMemoryRegion,
 {
-    let kernel_page_table = &mut page_tables.kernel;
-
-    let mut used_entries = UsedLevel4Entries::new(
-        frame_allocator.max_phys_addr(),
-        frame_allocator.len(),
-        framebuffer,
-        config,
-        &kernel.elf,
-    )
-    .expect("Failed to mark level 4 entries as used");
-
     // Enable support for the no-execute bit in page tables.
     enable_nxe_bit();
     // Make the kernel respect the write-protection bits even when in ring 0 by default
     enable_write_protect_bit();
 
     let config = kernel.config;
-    let kernel_slice_start = PhysAddr::new(kernel.start_address as _);
-    let kernel_slice_len = u64::try_from(kernel.len).unwrap();
+    let kernel_slice_start = PhysAddr::new(kernel.elf_bytes.as_ptr() as u64);
+    let kernel_slice_len = u64::try_from(kernel.elf_bytes.len()).unwrap();
 
-    let (kernel_image_offset, entry_point, tls_template) = load_kernel::load_kernel(
-        kernel,
-        kernel_page_table,
-        frame_allocator,
-        &mut used_entries,
-    )
-    .expect("no entry point");
-    log::info!("Entry point at: {:#x}", entry_point.as_u64());
-    // create a stack
-    let stack_start = {
-        // we need page-alignment because we want a guard page directly below the stack
-        let guard_page = mapping_addr_page_aligned(
-            config.mappings.kernel_stack,
-            // allocate an additional page as a guard page
-            Size4KiB::SIZE + config.kernel_stack_size,
-            &mut used_entries,
-            "kernel stack start",
-        );
-        guard_page + 1
+    // Build RNG for ASLR if enabled.
+    let mut rng = if config.mappings.aslr {
+        Some(entropy::build_rng())
+    } else {
+        None
     };
-    let stack_end_addr = stack_start.start_address() + config.kernel_stack_size;
 
-    let stack_end = Page::containing_address(stack_end_addr - 1u64);
-    for page in Page::range_inclusive(stack_start, stack_end) {
-        let frame = frame_allocator
-            .allocate_frame()
-            .expect("frame allocation failed when mapping a kernel stack");
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-        match unsafe { kernel_page_table.map_to(page, frame, flags, frame_allocator) } {
-            Ok(tlb) => tlb.flush(),
-            Err(err) => panic!("failed to map page {:?}: {:?}", page, err),
+    // Query frame allocator info before borrowing it through the bridge.
+    let max_phys = frame_allocator.max_phys_addr();
+    let frame_allocator_len = frame_allocator.len();
+
+    // Create the kernel-elf-loader bridge types.
+    let phys_mem = IdentityMappedAccess;
+    let mut x86_pt = X86PageTable::new(&mut page_tables.kernel);
+    let mut x86_alloc = X86FrameAllocator::new(frame_allocator);
+
+    let rng_ref: Option<&mut dyn rand_core::RngCore> = match rng {
+        Some(ref mut r) => Some(r),
+        None => None,
+    };
+
+    let mut loader = Loader::<X86PageSize>::new(&mut x86_pt, &mut x86_alloc, &phys_mem, rng_ref);
+    // Mark identity-mapped physical memory as used.
+    // We must round up to an L4-entry boundary (512 GiB) because the bootloader
+    // identity-maps physical memory using 2MiB pages, which populates L2/L3
+    // page table entries. The boot info is mapped into both the kernel and
+    // bootloader page tables, so its virtual address must not share any page
+    // table entries with the identity mapping.
+    let l4_entry_size: u64 = 4096 * 512 * 512 * 512; // 512 GiB
+    let identity_map_end = ((max_phys.as_u64() + l4_entry_size - 1) / l4_entry_size) * l4_entry_size;
+    loader.mark_used(kel::VirtAddr::new(0), identity_map_end);
+
+    // Mark framebuffer physical address range as used.
+    if let Some(fb) = framebuffer {
+        loader.mark_used(
+            kel::VirtAddr::new(fb.addr.as_u64()),
+            fb.info.byte_len as u64,
+        );
+    }
+
+    // Mark fixed-address config ranges as used.
+    if let Some(Mapping::FixedAddress(addr)) = config.mappings.physical_memory {
+        loader.mark_used(kel::VirtAddr::new(addr), max_phys.as_u64());
+    }
+    if let Some(Mapping::FixedAddress(addr)) = config.mappings.page_table_recursive {
+        // A recursive mapping occupies a full L4 entry (512 GiB).
+        let l4_entry_size: u64 = 4096 * 512 * 512 * 512;
+        let aligned = addr / l4_entry_size * l4_entry_size;
+        loader.mark_used(kel::VirtAddr::new(aligned), l4_entry_size);
+    }
+    if let Mapping::FixedAddress(addr) = config.mappings.kernel_stack {
+        loader.mark_used(kel::VirtAddr::new(addr), config.kernel_stack_size + PAGE_SIZE);
+    }
+    if let Mapping::FixedAddress(addr) = config.mappings.boot_info {
+        let boot_info_layout = Layout::new::<BootInfo>();
+        let regions = frame_allocator_len + 1;
+        let memory_regions_layout = Layout::array::<MemoryRegion>(regions).unwrap();
+        let (combined, _) = boot_info_layout.extend(memory_regions_layout).unwrap();
+        loader.mark_used(kel::VirtAddr::new(addr), combined.size() as u64);
+    }
+    if let Mapping::FixedAddress(addr) = config.mappings.framebuffer {
+        if let Some(fb) = framebuffer {
+            loader.mark_used(kel::VirtAddr::new(addr), fb.info.byte_len as u64);
         }
     }
 
-    // identity-map context switch function, so that we don't get an immediate pagefault
-    // after switching the active page table
+    // Mark dynamic range boundaries.
+    if let Some(dynamic_range_start) = config.mappings.dynamic_range_start {
+        // Everything before this is unusable for dynamic allocation.
+        if dynamic_range_start > 0 {
+            loader.mark_used(kel::VirtAddr::new(0), dynamic_range_start);
+        }
+    }
+    if let Some(dynamic_range_end) = config.mappings.dynamic_range_end {
+        // Everything after this is unusable.
+        let end = dynamic_range_end;
+        let remaining = 0xFFFF_FFFF_FFFF_0000u64.saturating_sub(end);
+        if remaining > 0 {
+            loader.mark_used(kel::VirtAddr::new(end), remaining);
+        }
+    }
+
+    // Load the kernel ELF.
+    let loaded = loader
+        .load_kernel(
+            kernel.elf_bytes,
+            kel::PhysAddr::new(kernel_slice_start.as_u64()),
+            mapping_to_kernel_placement(config.mappings.kernel_base),
+            false, // no huge pages for kernel segments
+        )
+        .expect("failed to load kernel ELF");
+
+    log::info!("Entry point at: {:#x}", loaded.entry_point.as_u64());
+
+    // Convert TLS template from kernel-elf-loader type to bootloader_api type.
+    let tls_template = loaded.tls_template.map(|tls| TlsTemplate {
+        start_addr: tls.start_addr.as_u64(),
+        mem_size: tls.mem_size,
+        file_size: tls.file_size,
+    });
+
+    let entry_point = VirtAddr::new(loaded.entry_point.as_u64());
+    let kernel_image_offset = VirtAddr::new(loaded.load_base as u64);
+
+    // Create kernel stack: guard page + stack pages.
+    // We need them contiguous: guard page first, then stack pages.
+    let stack_flags = kel::PageFlags {
+        writable: true,
+        executable: false,
+    };
+    let guard_and_stack_size = PAGE_SIZE + config.kernel_stack_size;
+
+    let guard_page_addr = match config.mappings.kernel_stack {
+        Mapping::Dynamic => {
+            // Find one contiguous region for guard + stack.
+            let region_start = loader
+                .address_space_mut()
+                .find_free(guard_and_stack_size, PAGE_SIZE, None)
+                .expect("failed to find free region for kernel stack");
+            region_start
+        }
+        Mapping::FixedAddress(addr) => kel::VirtAddr::new(addr),
+    };
+
+    // Add guard page (unmapped) at the start.
+    loader
+        .add_guard_page(RegionPlacement::Fixed(guard_page_addr))
+        .expect("failed to add stack guard page");
+
+    // Allocate and map stack pages right after the guard page.
+    let stack_start_addr = kel::VirtAddr::new(guard_page_addr.as_u64() + PAGE_SIZE);
+    loader
+        .allocate_and_map(
+            config.kernel_stack_size,
+            stack_flags,
+            RegionPlacement::Fixed(stack_start_addr),
+        )
+        .expect("failed to allocate kernel stack");
+
+    let stack_bottom = VirtAddr::new(stack_start_addr.as_u64());
+    let stack_end_addr = VirtAddr::new(stack_start_addr.as_u64() + config.kernel_stack_size);
+    let stack_top = stack_end_addr.align_down(16u8);
+
+    // Map framebuffer.
+    let framebuffer_virt_addr = if let Some(fb) = framebuffer {
+        log::info!("Map framebuffer");
+        let fb_size = fb.info.byte_len as u64;
+        let fb_flags = kel::PageFlags {
+            writable: true,
+            executable: false,
+        };
+        let virt = loader
+            .map_physical_region(
+                kel::PhysAddr::new(fb.addr.as_u64()),
+                fb_size,
+                fb_flags,
+                mapping_to_placement(config.mappings.framebuffer),
+                false,
+            )
+            .expect("failed to map framebuffer");
+        Some(VirtAddr::new(virt.as_u64()))
+    } else {
+        None
+    };
+
+    // Map ramdisk.
+    let ramdisk_slice_len = system_info.ramdisk_len;
+    let ramdisk_slice_phys_start = system_info.ramdisk_addr.map(PhysAddr::new);
+    let ramdisk_slice_start = if let Some(phys_addr) = system_info.ramdisk_addr {
+        let ramdisk_flags = kel::PageFlags {
+            writable: true,
+            executable: false,
+        };
+        let virt = loader
+            .map_physical_region(
+                kel::PhysAddr::new(phys_addr),
+                system_info.ramdisk_len,
+                ramdisk_flags,
+                mapping_to_placement(config.mappings.ramdisk_memory),
+                false,
+            )
+            .expect("failed to map ramdisk");
+        Some(VirtAddr::new(virt.as_u64()))
+    } else {
+        None
+    };
+
+    // Map physical memory.
+    let physical_memory_offset = if let Some(mapping) = config.mappings.physical_memory {
+        log::info!("Map physical memory");
+        let phys_mem_flags = kel::PageFlags {
+            writable: true,
+            executable: false,
+        };
+        let size = max_phys.as_u64();
+        let virt = loader
+            .map_physical_region(
+                kel::PhysAddr::new(0),
+                size,
+                phys_mem_flags,
+                mapping_to_placement(mapping),
+                true, // use huge pages for physical memory mapping
+            )
+            .expect("failed to map physical memory");
+        Some(VirtAddr::new(virt.as_u64()))
+    } else {
+        None
+    };
+
+    // Extract the address space before dropping the loader.
+    let address_space = {
+        // We need to move the address space out. Since Loader borrows everything,
+        // we need to extract it from the internal state.
+        // Actually we can't easily move it out. Instead, let's drop the loader
+        // and do the remaining x86-specific ops directly on the page table.
+        // But first get the address space.
+        core::mem::replace(loader.address_space_mut(), AddressSpace::new())
+    };
+
+    // Drop the loader — remaining operations are x86_64-specific and use
+    // the page table + frame allocator directly.
+    drop(loader);
+
+    let kernel_page_table = &mut page_tables.kernel;
+
+    // Identity-map context switch function, so that we don't get an immediate pagefault
+    // after switching the active page table.
     let context_switch_function = PhysAddr::new(context_switch as *const () as u64);
     let context_switch_function_start_frame: PhysFrame =
         PhysFrame::containing_address(context_switch_function);
@@ -245,9 +435,6 @@ where
     ) {
         let page = Page::containing_address(VirtAddr::new(frame.start_address().as_u64()));
         match unsafe {
-            // The parent table flags need to be both readable and writable to
-            // support recursive page tables.
-            // See https://github.com/rust-osdev/bootloader/issues/443#issuecomment-2130010621
             kernel_page_table.map_to_with_table_flags(
                 page,
                 frame,
@@ -261,15 +448,13 @@ where
         }
     }
 
-    // create, load, and identity-map GDT (required for working `iretq`)
+    // Create, load, and identity-map GDT (required for working `iretq`).
     let gdt_frame = frame_allocator
         .allocate_frame()
         .expect("failed to allocate GDT frame");
     gdt::create_and_load(gdt_frame);
     let gdt_page = Page::containing_address(VirtAddr::new(gdt_frame.start_address().as_u64()));
     match unsafe {
-        // The parent table flags need to be both readable and writable to
-        // support recursive page tables.
         kernel_page_table.map_to_with_table_flags(
             gdt_page,
             gdt_frame,
@@ -282,106 +467,26 @@ where
         Err(err) => panic!("failed to identity map frame {:?}: {:?}", gdt_frame, err),
     }
 
-    // map framebuffer
-    let framebuffer_virt_addr = if let Some(framebuffer) = framebuffer {
-        log::info!("Map framebuffer");
-
-        let framebuffer_start_frame: PhysFrame = PhysFrame::containing_address(framebuffer.addr);
-        let framebuffer_end_frame = PhysFrame::containing_address(
-            framebuffer.addr + framebuffer.info.byte_len as u64 - 1u64,
-        );
-        let start_page = mapping_addr_page_aligned(
-            config.mappings.framebuffer,
-            u64::from_usize(framebuffer.info.byte_len),
-            &mut used_entries,
-            "framebuffer",
-        );
-        for (i, frame) in
-            PhysFrame::range_inclusive(framebuffer_start_frame, framebuffer_end_frame).enumerate()
-        {
-            let page = start_page + u64::from_usize(i);
-            let flags =
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-            match unsafe { kernel_page_table.map_to(page, frame, flags, frame_allocator) } {
-                Ok(tlb) => tlb.flush(),
-                Err(err) => panic!(
-                    "failed to map page {:?} to frame {:?}: {:?}",
-                    page, frame, err
-                ),
-            }
-        }
-        let framebuffer_virt_addr = start_page.start_address();
-        Some(framebuffer_virt_addr)
-    } else {
-        None
-    };
-    let ramdisk_slice_len = system_info.ramdisk_len;
-    let ramdisk_slice_phys_start = system_info.ramdisk_addr.map(PhysAddr::new);
-    let ramdisk_slice_start = if let Some(physical_address) = ramdisk_slice_phys_start {
-        let start_page = mapping_addr_page_aligned(
-            config.mappings.ramdisk_memory,
-            system_info.ramdisk_len,
-            &mut used_entries,
-            "ramdisk start",
-        );
-        let ramdisk_physical_start_page: PhysFrame<Size4KiB> =
-            PhysFrame::containing_address(physical_address);
-        let ramdisk_page_count = (system_info.ramdisk_len - 1) / Size4KiB::SIZE;
-        let ramdisk_physical_end_page = ramdisk_physical_start_page + ramdisk_page_count;
-
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-        for (i, frame) in
-            PhysFrame::range_inclusive(ramdisk_physical_start_page, ramdisk_physical_end_page)
-                .enumerate()
-        {
-            let page = start_page + i as u64;
-            match unsafe { kernel_page_table.map_to(page, frame, flags, frame_allocator) } {
-                Ok(tlb) => tlb.ignore(),
-                Err(err) => panic!(
-                    "Failed to map page {:?} to frame {:?}: {:?}",
-                    page, frame, err
-                ),
-            };
-        }
-        Some(start_page.start_address())
-    } else {
-        None
-    };
-
-    let physical_memory_offset = if let Some(mapping) = config.mappings.physical_memory {
-        log::info!("Map physical memory");
-
-        let start_frame = PhysFrame::containing_address(PhysAddr::new(0));
-        let max_phys = frame_allocator.max_phys_addr();
-        let end_frame: PhysFrame<Size2MiB> = PhysFrame::containing_address(max_phys - 1u64);
-
-        let size = max_phys.as_u64();
-        let alignment = Size2MiB::SIZE;
-        let offset = mapping_addr(mapping, size, alignment, &mut used_entries)
-            .expect("start address for physical memory mapping must be 2MiB-page-aligned");
-
-        for frame in PhysFrame::range_inclusive(start_frame, end_frame) {
-            let page = Page::containing_address(offset + frame.start_address().as_u64());
-            let flags =
-                PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE;
-            match unsafe { kernel_page_table.map_to(page, frame, flags, frame_allocator) } {
-                Ok(tlb) => tlb.ignore(),
-                Err(err) => panic!(
-                    "failed to map page {:?} to frame {:?}: {:?}",
-                    page, frame, err
-                ),
-            };
-        }
-
-        Some(offset)
-    } else {
-        None
-    };
-
+    // Set up recursive page table mapping.
     let recursive_index = if let Some(mapping) = config.mappings.page_table_recursive {
         log::info!("Map page table recursively");
         let index = match mapping {
-            Mapping::Dynamic => used_entries.get_free_entries(1),
+            Mapping::Dynamic => {
+                // Find a free L4 index. Use the address space to find an aligned region.
+                // Each L4 entry covers 512 GiB.
+                // We just need one free L4 entry. Pick a simple approach:
+                // scan the L4 table for an unused entry.
+                let l4_table = kernel_page_table.level_4_table_mut();
+                let mut found = None;
+                for i in 0u16..512 {
+                    let idx = PageTableIndex::new(i);
+                    if l4_table[idx].is_unused() {
+                        found = Some(idx);
+                        break;
+                    }
+                }
+                found.expect("no free level 4 entry for recursive mapping")
+            }
             Mapping::FixedAddress(offset) => {
                 let offset = VirtAddr::new(offset);
                 let table_level = PageTableLevel::Four;
@@ -392,7 +497,6 @@ where
                         table_level.entry_address_space_alignment()
                     );
                 }
-
                 offset.p4_index()
             }
         };
@@ -415,12 +519,9 @@ where
     Mappings {
         framebuffer: framebuffer_virt_addr,
         entry_point,
-        stack_bottom: stack_start.start_address(),
-        // Use the configured stack size, even if it's not page-aligned. However, we
-        // need to align it down to the next 16-byte boundary because the System V
-        // ABI requires a 16-byte stack alignment.
-        stack_top: stack_end_addr.align_down(16u8),
-        used_entries,
+        stack_bottom,
+        stack_top,
+        address_space,
         physical_memory_offset,
         recursive_index,
         tls_template,
@@ -442,9 +543,8 @@ pub struct Mappings {
     pub stack_bottom: VirtAddr,
     /// The (exclusive) end address of the kernel stack.
     pub stack_top: VirtAddr,
-    /// Keeps track of used entries in the level 4 page table, useful for finding a free
-    /// virtual memory when needed.
-    pub used_entries: UsedLevel4Entries,
+    /// Tracks used virtual address ranges for finding free regions.
+    pub address_space: AddressSpace,
     /// The start address of the framebuffer, if any.
     pub framebuffer: Option<VirtAddr>,
     /// The start address of the physical memory mapping, if enabled.
@@ -493,13 +593,27 @@ where
         let (combined, memory_regions_offset) =
             boot_info_layout.extend(memory_regions_layout).unwrap();
 
-        let boot_info_addr = mapping_addr(
-            config.mappings.boot_info,
-            u64::from_usize(combined.size()),
-            u64::from_usize(combined.align()),
-            &mut mappings.used_entries,
-        )
-        .expect("boot info addr is not properly aligned");
+        let boot_info_addr = match config.mappings.boot_info {
+            Mapping::FixedAddress(addr) => {
+                let addr = VirtAddr::new(addr);
+                assert!(
+                    addr.is_aligned(combined.align() as u64),
+                    "boot info addr is not properly aligned"
+                );
+                addr
+            }
+            Mapping::Dynamic => {
+                let addr = mappings
+                    .address_space
+                    .find_free(
+                        combined.size() as u64,
+                        combined.align() as u64,
+                        None, // No ASLR for boot info
+                    )
+                    .expect("no free virtual address space for boot info");
+                VirtAddr::new(addr.as_u64())
+            }
+        };
 
         let memory_map_regions_addr = boot_info_addr + memory_regions_offset as u64;
         let memory_map_regions_end = boot_info_addr + combined.size() as u64;
@@ -657,35 +771,6 @@ struct Addresses {
     stack_top: VirtAddr,
     entry_point: VirtAddr,
     boot_info: &'static mut BootInfo,
-}
-
-fn mapping_addr_page_aligned(
-    mapping: Mapping,
-    size: u64,
-    used_entries: &mut UsedLevel4Entries,
-    kind: &str,
-) -> Page {
-    match mapping_addr(mapping, size, Size4KiB::SIZE, used_entries) {
-        Ok(addr) => Page::from_start_address(addr).unwrap(),
-        Err(addr) => panic!("{kind} address must be page-aligned (is `{addr:?})`"),
-    }
-}
-
-fn mapping_addr(
-    mapping: Mapping,
-    size: u64,
-    alignment: u64,
-    used_entries: &mut UsedLevel4Entries,
-) -> Result<VirtAddr, VirtAddr> {
-    let addr = match mapping {
-        Mapping::FixedAddress(addr) => VirtAddr::new(addr),
-        Mapping::Dynamic => used_entries.get_free_address(size, alignment),
-    };
-    if addr.is_aligned(alignment) {
-        Ok(addr)
-    } else {
-        Err(addr)
-    }
 }
 
 fn enable_nxe_bit() {
