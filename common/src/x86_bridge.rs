@@ -1,10 +1,10 @@
 //! Bridge between bootloader-specific types and kernel-elf-loader's x86_64 module.
 //!
-//! Re-exports [`X86_64PageSize`] and [`X86_64PageTable`] from kernel-elf-loader,
+//! Re-exports [`X86_64PageSize`] from kernel-elf-loader,
 //! and provides [`X86_64FrameAllocator`] which wraps the bootloader's
 //! [`LegacyFrameAllocator`](crate::legacy_memory_region::LegacyFrameAllocator).
 
-pub use kernel_elf_loader::x86_64::{X86_64PageSize, X86_64PageTable};
+pub use kernel_elf_loader::x86_64::X86_64PageSize;
 
 use kernel_elf_loader::{self as kel, PhysAddr};
 use x86_64::structures::paging::{
