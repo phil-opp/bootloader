@@ -1,8 +1,8 @@
 //! x86_64 trait implementations for the kernel ELF loader.
 //!
-//! Provides [`X86_64PageSize`] and [`X86_64PageTable`] which implement
-//! the loader's [`PageSize`] and [`PageTable`] traits using the `x86_64`
-//! crate's page table types.
+//! Provides `X86_64PageSize` and `X86_64PageTable` which implement the
+//! loader's [`PageSize`](crate::PageSize) and [`PageTable`](crate::PageTable)
+//! traits using the `x86_64` crate's page table types.
 //!
 //! Enable the `x86_64` Cargo feature to use this module.
 
@@ -20,7 +20,9 @@ use x86_64::structures::paging::{
 /// x86_64 page sizes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum X86_64PageSize {
+    /// 4 KiB base page.
     Size4KiB,
+    /// 2 MiB huge page.
     Size2MiB,
 }
 
@@ -42,6 +44,7 @@ pub struct X86_64PageTable<'a> {
 }
 
 impl<'a> X86_64PageTable<'a> {
+    /// Wrap an [`OffsetPageTable`] to implement the loader's [`PageTable`] trait.
     pub fn new(inner: &'a mut OffsetPageTable<'static>) -> Self {
         Self { inner }
     }

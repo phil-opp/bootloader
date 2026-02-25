@@ -12,22 +12,27 @@ use crate::error::{MapError, UnmapError};
 pub struct PhysAddr(pub u64);
 
 impl PhysAddr {
+    /// Create a new physical address.
     pub fn new(addr: u64) -> Self {
         Self(addr)
     }
 
+    /// Return the raw address value.
     pub fn as_u64(self) -> u64 {
         self.0
     }
 
+    /// Check whether this address is aligned to `alignment`.
     pub fn is_aligned(self, alignment: u64) -> bool {
         self.0 % alignment == 0
     }
 
+    /// Round this address down to the nearest multiple of `alignment`.
     pub fn align_down(self, alignment: u64) -> Self {
         Self(self.0 / alignment * alignment)
     }
 
+    /// Round this address up to the nearest multiple of `alignment`.
     pub fn align_up(self, alignment: u64) -> Self {
         Self((self.0 + alignment - 1) / alignment * alignment)
     }
@@ -39,22 +44,27 @@ impl PhysAddr {
 pub struct VirtAddr(pub u64);
 
 impl VirtAddr {
+    /// Create a new virtual address.
     pub fn new(addr: u64) -> Self {
         Self(addr)
     }
 
+    /// Return the raw address value.
     pub fn as_u64(self) -> u64 {
         self.0
     }
 
+    /// Check whether this address is aligned to `alignment`.
     pub fn is_aligned(self, alignment: u64) -> bool {
         self.0 % alignment == 0
     }
 
+    /// Round this address down to the nearest multiple of `alignment`.
     pub fn align_down(self, alignment: u64) -> Self {
         Self(self.0 / alignment * alignment)
     }
 
+    /// Round this address up to the nearest multiple of `alignment`.
     pub fn align_up(self, alignment: u64) -> Self {
         Self((self.0 + alignment - 1) / alignment * alignment)
     }
@@ -63,7 +73,9 @@ impl VirtAddr {
 /// Flags for page table entries.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PageFlags {
+    /// Whether the page is writable.
     pub writable: bool,
+    /// Whether the page is executable.
     pub executable: bool,
 }
 

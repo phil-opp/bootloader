@@ -12,8 +12,7 @@ use bootloader_api::{
 use bootloader_boot_config::{BootConfig, LevelFilter};
 use core::{alloc::Layout, arch::asm, mem::MaybeUninit, slice};
 use kernel_elf_loader::{
-    self as kel, AddressSpace,
-    loader::{KernelPlacement, Loader, RegionPlacement},
+    self as kel, AddressSpace, KernelPlacement, Loader, RegionPlacement,
 };
 use x86_64::{
     PhysAddr, VirtAddr,

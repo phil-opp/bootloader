@@ -21,28 +21,63 @@
 //! - [`PageTable`] — abstract page table operations
 //! - [`FrameAllocator`] — allocate physical frames
 //! - [`PhysicalMemoryAccess`] — read/write/zero/copy physical memory
+//!
+//! # Cargo Features
+//!
+//! - **`x86_64`** — Enables the [`x86_64`] module with ready-made
+//!   [`PageSize`] and [`PageTable`] implementations backed by the
+//!   [`x86_64`](::x86_64) crate.
 
 #![cfg_attr(not(test), no_std)]
+#![warn(missing_docs)]
 
-pub mod address_space;
-pub mod error;
-pub mod traits;
+// === Core types and traits ===
 
-pub mod identity_mapped;
+/// Platform-abstraction traits for page tables, frame allocation, and
+/// physical memory access.
+pub(crate) mod traits;
+
+/// Error types for the loader.
+pub(crate) mod error;
+
+// === Internal implementation ===
+
 mod elf_loading;
 mod relocation;
 
+// === Public modules ===
+
+/// Virtual address space tracking.
+pub(crate) mod address_space;
+
+/// Identity-mapped physical memory access implementation.
+pub(crate) mod identity_mapped;
+
+/// The main [`Loader`] type for loading kernel ELFs and mapping memory
+/// regions.
+pub(crate) mod loader;
+
+// === Platform-specific (feature-gated) ===
+
+/// x86_64 platform implementation (requires the `x86_64` Cargo feature).
 #[cfg(feature = "x86_64")]
 pub mod x86_64;
-
-pub mod loader;
 
 // Re-export key types at the crate root.
 pub use address_space::AddressSpace;
 pub use error::{LoadError, MapError, UnmapError};
-pub use loader::{KernelPlacement, Loader, RegionPlacement};
 pub use identity_mapped::IdentityMappedAccess;
-pub use traits::{FrameAllocator, PageFlags, PageSize, PageTable, PhysAddr, PhysicalMemoryAccess, VirtAddr};
+pub use loader::{KernelPlacement, Loader, RegionPlacement};
+pub use traits::{
+    FrameAllocator, PageFlags, PageSize, PageTable, PhysAddr, PhysicalMemoryAccess, VirtAddr,
+};
+
+/// Align `value` up to the next multiple of `alignment`.
+///
+/// `alignment` must be non-zero.
+pub(crate) fn align_up(value: u64, alignment: u64) -> u64 {
+    (value + alignment - 1) / alignment * alignment
+}
 
 /// Result of loading a kernel ELF.
 #[derive(Debug)]

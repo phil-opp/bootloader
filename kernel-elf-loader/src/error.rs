@@ -33,7 +33,7 @@ impl core::fmt::Display for LoadError {
             Self::UnsupportedMachine(m) => write!(f, "unsupported ELF machine type: {m}"),
             Self::UnsupportedRelocation(ty) => write!(f, "unsupported relocation type: {ty:#x}"),
             Self::FrameAllocationFailed => write!(f, "frame allocation failed"),
-            Self::MappingFailed(e) => write!(f, "page table mapping failed: {e:?}"),
+            Self::MappingFailed(e) => write!(f, "page table mapping failed: {e}"),
             Self::NotPageAligned => write!(f, "kernel ELF not page-aligned in physical memory"),
             Self::AddressSpaceFull => write!(f, "no free virtual address space"),
             Self::InvalidPlacement => write!(f, "invalid kernel placement"),
@@ -66,6 +66,27 @@ pub enum UnmapError {
     /// A parent page table entry is a huge page, so the page
     /// cannot be unmapped individually.
     ParentEntryHugePage,
+}
+
+impl core::fmt::Display for MapError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::AlreadyMapped => write!(f, "page already mapped"),
+            Self::FrameAllocationFailed => write!(f, "frame allocation failed"),
+            Self::InvalidAddress => write!(f, "invalid address alignment"),
+            Self::NotMapped => write!(f, "page not mapped"),
+            Self::ParentEntryHugePage => write!(f, "parent entry is a huge page"),
+        }
+    }
+}
+
+impl core::fmt::Display for UnmapError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotMapped => write!(f, "page not mapped"),
+            Self::ParentEntryHugePage => write!(f, "parent entry is a huge page"),
+        }
+    }
 }
 
 impl From<MapError> for LoadError {

@@ -3,6 +3,7 @@
 //! Maintains a sorted list of used virtual address regions and provides
 //! methods to find free regions with optional ASLR randomization.
 
+use crate::align_up;
 use crate::traits::VirtAddr;
 use rand_core::RngCore;
 
@@ -19,6 +20,7 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
+    /// Create an empty address space with no used regions.
     pub fn new() -> Self {
         Self {
             regions: [(0, 0); MAX_REGIONS],
@@ -240,10 +242,6 @@ impl CandidateList {
     fn as_slice(&self) -> &[(u64, u64)] {
         &self.entries[..self.count]
     }
-}
-
-fn align_up(value: u64, alignment: u64) -> u64 {
-    (value + alignment - 1) / alignment * alignment
 }
 
 #[cfg(test)]

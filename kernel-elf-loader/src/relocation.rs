@@ -47,7 +47,6 @@ impl CopiedPages {
 /// Returns the physical address of the (now-writable) frame.
 pub(crate) fn ensure_page_writable<S: PageSize>(
     virt: VirtAddr,
-    _page_size: S,
     page_table: &mut dyn PageTable<S>,
     allocator: &mut dyn FrameAllocator<S>,
     phys_mem: &dyn PhysicalMemoryAccess,
@@ -147,13 +146,12 @@ pub(crate) fn read_u64_at<S: PageSize>(
 pub(crate) fn write_u64_at<S: PageSize>(
     virt: VirtAddr,
     value: u64,
-    page_size: S,
     page_table: &mut dyn PageTable<S>,
     allocator: &mut dyn FrameAllocator<S>,
     phys_mem: &dyn PhysicalMemoryAccess,
     copied: &mut CopiedPages,
 ) -> Result<(), LoadError> {
-    let phys = ensure_page_writable(virt, page_size, page_table, allocator, phys_mem, copied)?;
+    let phys = ensure_page_writable(virt, page_table, allocator, phys_mem, copied)?;
     unsafe {
         phys_mem.write_phys(phys, &value.to_ne_bytes());
     }
@@ -220,7 +218,6 @@ pub(crate) fn process_rela<S: PageSize>(
         write_u64_at(
             VirtAddr::new(dest_vaddr),
             value,
-            S::BASE,
             page_table,
             allocator,
             phys_mem,
@@ -316,7 +313,6 @@ fn apply_relative_reloc<S: PageSize>(
     write_u64_at(
         VirtAddr::new(virt_addr),
         relocated,
-        S::BASE,
         page_table,
         allocator,
         phys_mem,

@@ -11,6 +11,7 @@ use rand_core::RngCore;
 use crate::{
     LoadedKernel,
     address_space::AddressSpace,
+    align_up,
     elf_loading::load_and_relocate_elf,
     error::LoadError,
     traits::{FrameAllocator, PageFlags, PageSize, PageTable, PhysAddr, PhysicalMemoryAccess, VirtAddr},
@@ -169,7 +170,6 @@ impl<'a, S: PageSize> Loader<'a, S> {
 
         let tls_template = load_and_relocate_elf(
             &elf,
-            kernel_bytes,
             kernel_phys_base,
             load_base,
             use_huge_pages,
@@ -407,6 +407,3 @@ fn calc_elf_memory_requirements(elf: &ElfBytes<AnyEndian>) -> Result<(u64, u64, 
     Ok((size, max_align, min_addr))
 }
 
-fn align_up(value: u64, alignment: u64) -> u64 {
-    (value + alignment - 1) / alignment * alignment
-}

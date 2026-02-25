@@ -13,6 +13,7 @@ const DT_RELRENT: i64 = 37;
 
 use crate::{
     TlsTemplate,
+    align_up,
     error::LoadError,
     relocation::{CopiedPages, process_rela, process_relr},
     traits::{FrameAllocator, PageFlags, PageSize, PageTable, PhysAddr, PhysicalMemoryAccess, VirtAddr},
@@ -23,7 +24,6 @@ use crate::{
 /// Returns the TLS template if a TLS segment is present.
 pub(crate) fn load_and_relocate_elf<S: PageSize>(
     elf: &ElfBytes<AnyEndian>,
-    _kernel_bytes: &[u8],
     kernel_phys_base: PhysAddr,
     load_base: i64,
     use_huge_pages: bool,
@@ -77,7 +77,6 @@ pub(crate) fn load_and_relocate_elf<S: PageSize>(
         if phdr.p_type == PT_DYNAMIC {
             process_dynamic_segment(
                 elf,
-                &phdr,
                 load_base,
                 page_table,
                 allocator,
@@ -297,7 +296,6 @@ fn handle_bss_section<S: PageSize>(
 /// Process the PT_DYNAMIC segment to find and apply relocations.
 fn process_dynamic_segment<S: PageSize>(
     elf: &ElfBytes<AnyEndian>,
-    _phdr: &elf::segment::ProgramHeader,
     load_base: i64,
     page_table: &mut dyn PageTable<S>,
     allocator: &mut dyn FrameAllocator<S>,
@@ -405,6 +403,3 @@ pub(crate) fn elf_flags_to_page_flags(elf_flags: u32) -> PageFlags {
     }
 }
 
-fn align_up(value: u64, alignment: u64) -> u64 {
-    (value + alignment - 1) / alignment * alignment
-}
