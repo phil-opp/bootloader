@@ -49,6 +49,13 @@ pub enum MapError {
     AlreadyMapped,
     /// Frame allocation failed while creating intermediate page tables.
     FrameAllocationFailed,
+    /// The virtual or physical address is not properly aligned.
+    InvalidAddress,
+    /// The page is not mapped (for update_flags).
+    NotMapped,
+    /// A parent page table entry is a huge page, so the mapping
+    /// cannot be created at the requested granularity.
+    ParentEntryHugePage,
 }
 
 /// Errors from page table unmap operations.
@@ -56,6 +63,9 @@ pub enum MapError {
 pub enum UnmapError {
     /// The page is not mapped.
     NotMapped,
+    /// A parent page table entry is a huge page, so the page
+    /// cannot be unmapped individually.
+    ParentEntryHugePage,
 }
 
 impl From<MapError> for LoadError {

@@ -87,16 +87,20 @@ impl kel::PageTable<X86PageSize> for X86PageTable<'_> {
                 let page = Page::<Size4KiB>::from_start_address(
                     x86_64::VirtAddr::new(virt.as_u64()),
                 )
-                .map_err(|_| MapError::AlreadyMapped)?;
+                .map_err(|_| MapError::InvalidAddress)?;
                 let frame = PhysFrame::<Size4KiB>::from_start_address(
                     x86_64::PhysAddr::new(phys.as_u64()),
                 )
-                .map_err(|_| MapError::FrameAllocationFailed)?;
+                .map_err(|_| MapError::InvalidAddress)?;
 
                 unsafe {
                     self.inner
                         .map_to_with_table_flags(page, frame, x86_flags, parent_flags, &mut adapter)
-                        .map_err(|_| MapError::AlreadyMapped)?
+                        .map_err(|e| match e {
+                            x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed => MapError::FrameAllocationFailed,
+                            x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage => MapError::ParentEntryHugePage,
+                            x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_) => MapError::AlreadyMapped,
+                        })?
                         .ignore();
                 }
             }
@@ -104,16 +108,20 @@ impl kel::PageTable<X86PageSize> for X86PageTable<'_> {
                 let page = Page::<Size2MiB>::from_start_address(
                     x86_64::VirtAddr::new(virt.as_u64()),
                 )
-                .map_err(|_| MapError::AlreadyMapped)?;
+                .map_err(|_| MapError::InvalidAddress)?;
                 let frame = PhysFrame::<Size2MiB>::from_start_address(
                     x86_64::PhysAddr::new(phys.as_u64()),
                 )
-                .map_err(|_| MapError::FrameAllocationFailed)?;
+                .map_err(|_| MapError::InvalidAddress)?;
 
                 unsafe {
                     self.inner
                         .map_to_with_table_flags(page, frame, x86_flags, parent_flags, &mut adapter)
-                        .map_err(|_| MapError::AlreadyMapped)?
+                        .map_err(|e| match e {
+                            x86_64::structures::paging::mapper::MapToError::FrameAllocationFailed => MapError::FrameAllocationFailed,
+                            x86_64::structures::paging::mapper::MapToError::ParentEntryHugePage => MapError::ParentEntryHugePage,
+                            x86_64::structures::paging::mapper::MapToError::PageAlreadyMapped(_) => MapError::AlreadyMapped,
+                        })?
                         .ignore();
                 }
             }
@@ -132,7 +140,10 @@ impl kel::PageTable<X86PageSize> for X86PageTable<'_> {
         unsafe {
             self.inner
                 .update_flags(page, x86_flags)
-                .map_err(|_| MapError::AlreadyMapped)?
+                .map_err(|e| match e {
+                    x86_64::structures::paging::mapper::FlagUpdateError::PageNotMapped => MapError::NotMapped,
+                    x86_64::structures::paging::mapper::FlagUpdateError::ParentEntryHugePage => MapError::ParentEntryHugePage,
+                })?
                 .ignore();
         }
         Ok(())
@@ -140,7 +151,11 @@ impl kel::PageTable<X86PageSize> for X86PageTable<'_> {
 
     fn unmap(&mut self, virt: kel::VirtAddr) -> Result<(kel::PhysAddr, X86PageSize), UnmapError> {
         let page = Page::<Size4KiB>::containing_address(x86_64::VirtAddr::new(virt.as_u64()));
-        let (frame, flush) = self.inner.unmap(page).map_err(|_| UnmapError::NotMapped)?;
+        let (frame, flush) = self.inner.unmap(page).map_err(|e| match e {
+            x86_64::structures::paging::mapper::UnmapError::ParentEntryHugePage => UnmapError::ParentEntryHugePage,
+            x86_64::structures::paging::mapper::UnmapError::PageNotMapped => UnmapError::NotMapped,
+            x86_64::structures::paging::mapper::UnmapError::InvalidFrameAddress(_) => UnmapError::NotMapped,
+        })?;
         flush.ignore();
         Ok((
             kel::PhysAddr::new(frame.start_address().as_u64()),
