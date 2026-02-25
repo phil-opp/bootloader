@@ -11,7 +11,7 @@ repository.workspace = true
 [dependencies]
 bootloader_api = { workspace = true }
 bootloader-boot-config = { workspace = true }
-kernel-elf-loader = { path = "../kernel-elf-loader" }
+kernel-elf-loader = { path = "../kernel-elf-loader", features = ["x86_64"] }
 elf = { version = "0.8", default-features = false }
 conquer-once = { version = "0.3.2", default-features = false }
 spinning_top = "0.2.4"

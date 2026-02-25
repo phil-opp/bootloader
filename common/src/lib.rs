@@ -2,7 +2,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::legacy_memory_region::{LegacyFrameAllocator, LegacyMemoryRegion};
-use crate::x86_bridge::{X86FrameAllocator, X86PageSize, X86PageTable};
+use crate::x86_bridge::{X86_64FrameAllocator, X86_64PageSize, X86_64PageTable};
 use kernel_elf_loader::IdentityMappedAccess;
 use bootloader_api::{
     BootInfo, BootloaderConfig,
@@ -213,15 +213,15 @@ where
 
     // Create the kernel-elf-loader bridge types.
     let phys_mem = IdentityMappedAccess;
-    let mut x86_pt = X86PageTable::new(&mut page_tables.kernel);
-    let mut x86_alloc = X86FrameAllocator::new(frame_allocator);
+    let mut x86_64_pt = X86_64PageTable::new(&mut page_tables.kernel);
+    let mut x86_64_alloc = X86_64FrameAllocator::new(frame_allocator);
 
     let rng_ref: Option<&mut dyn rand_core::RngCore> = match rng {
         Some(ref mut r) => Some(r),
         None => None,
     };
 
-    let mut loader = Loader::<X86PageSize>::new(&mut x86_pt, &mut x86_alloc, &phys_mem, rng_ref);
+    let mut loader = Loader::<X86_64PageSize>::new(&mut x86_64_pt, &mut x86_64_alloc, &phys_mem, rng_ref);
     // Mark identity-mapped physical memory as used.
     // We must round up to an L4-entry boundary (512 GiB) because the bootloader
     // identity-maps physical memory using 2MiB pages, which populates L2/L3

@@ -32,6 +32,9 @@ pub mod identity_mapped;
 mod elf_loading;
 mod relocation;
 
+#[cfg(feature = "x86_64")]
+pub mod x86_64;
+
 pub mod loader;
 
 // Re-export key types at the crate root.

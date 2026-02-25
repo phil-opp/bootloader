@@ -5,7 +5,11 @@ edition = "2024"
 description = "Platform-agnostic ELF kernel loader for bootloaders"
 license = "MIT OR Apache-2.0"
 
+[features]
+x86_64 = ["dep:x86_64"]
+
 [dependencies]
 elf = { version = "0.8", default-features = false }
 rand_core = { version = "0.6", default-features = false }
 log = "0.4"
+x86_64 = { version = "0.15.2", optional = true }
