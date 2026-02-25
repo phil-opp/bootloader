@@ -76,9 +76,7 @@ pub(crate) fn ensure_page_writable<S: PageSize>(
         .ok_or(LoadError::FrameAllocationFailed)?;
 
     // Copy the old frame's contents to the new frame.
-    unsafe {
-        phys_mem.copy_phys(old_phys, new_phys, base_size as usize);
-    }
+    phys_mem.copy_phys(old_phys, new_phys, base_size as usize);
 
     // Remap the page to the new frame with writable flags.
     page_table
@@ -135,9 +133,7 @@ pub(crate) fn read_u64_at<S: PageSize>(
 
     let phys_target = PhysAddr::new(phys.as_u64() + offset);
     let mut buf = [0u8; 8];
-    unsafe {
-        phys_mem.read_phys(phys_target, &mut buf);
-    }
+    phys_mem.read_phys(phys_target, &mut buf);
     Ok(u64::from_ne_bytes(buf))
 }
 
@@ -152,9 +148,7 @@ pub(crate) fn write_u64_at<S: PageSize>(
     copied: &mut CopiedPages,
 ) -> Result<(), LoadError> {
     let phys = ensure_page_writable(virt, page_table, allocator, phys_mem, copied)?;
-    unsafe {
-        phys_mem.write_phys(phys, &value.to_ne_bytes());
-    }
+    phys_mem.write_phys(phys, &value.to_ne_bytes());
     Ok(())
 }
 

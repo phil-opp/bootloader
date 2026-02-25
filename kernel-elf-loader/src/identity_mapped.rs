@@ -9,29 +9,34 @@ use crate::{PhysAddr, PhysicalMemoryAccess};
 /// identity-mapped.
 pub struct IdentityMappedAccess;
 
-impl PhysicalMemoryAccess for IdentityMappedAccess {
-    unsafe fn read_phys(&self, addr: PhysAddr, buf: &mut [u8]) {
+/// # Safety
+///
+/// The caller must ensure that all physical memory is identity-mapped
+/// (i.e. physical address == virtual address) for the lifetime of this
+/// value. This is the standard environment inside a bootloader.
+unsafe impl PhysicalMemoryAccess for IdentityMappedAccess {
+    fn read_phys(&self, addr: PhysAddr, buf: &mut [u8]) {
         let src = addr.as_u64() as *const u8;
         unsafe {
             core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), buf.len());
         }
     }
 
-    unsafe fn write_phys(&self, addr: PhysAddr, buf: &[u8]) {
+    fn write_phys(&self, addr: PhysAddr, buf: &[u8]) {
         let dst = addr.as_u64() as *mut u8;
         unsafe {
             core::ptr::copy_nonoverlapping(buf.as_ptr(), dst, buf.len());
         }
     }
 
-    unsafe fn zero_phys(&self, addr: PhysAddr, len: usize) {
+    fn zero_phys(&self, addr: PhysAddr, len: usize) {
         let dst = addr.as_u64() as *mut u8;
         unsafe {
             core::ptr::write_bytes(dst, 0, len);
         }
     }
 
-    unsafe fn copy_phys(&self, src: PhysAddr, dst: PhysAddr, len: usize) {
+    fn copy_phys(&self, src: PhysAddr, dst: PhysAddr, len: usize) {
         let src_ptr = src.as_u64() as *const u8;
         let dst_ptr = dst.as_u64() as *mut u8;
         unsafe {

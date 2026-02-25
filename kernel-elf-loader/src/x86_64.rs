@@ -2,7 +2,9 @@
 //!
 //! Implements the loader's [`PageSize`](crate::PageSize) and
 //! [`PageTable`](crate::PageTable) traits for the `x86_64` crate's
-//! page table types ([`OffsetPageTable`] and [`MappedPageTable`]).
+//! page table types ([`OffsetPageTable`] and [`MappedPageTable`]),
+//! wrapped in [`InactivePageTable`] to enforce the safety invariant
+//! that the page table is not currently active.
 //!
 //! Two page-size configurations are provided:
 //!
@@ -11,15 +13,16 @@
 //!
 //! Enable the `x86_64` Cargo feature to use this module.
 
+use core::ops::{Deref, DerefMut};
+
 use crate::{
-    error::{MapError, UnmapError},
     FrameAllocator, PageFlags, PageSize, PageTable, PhysAddr, VirtAddr,
+    error::{MapError, UnmapError},
 };
 use x86_64::structures::paging::{
-    self,
-    FrameAllocator as X86_64FrameAllocatorTrait, Mapper, MappedPageTable, OffsetPageTable, Page,
-    PageTableFlags, PhysFrame, Size1GiB, Size2MiB, Size4KiB, Translate,
-    mapper::{MappedFrame, MapToError, PageTableFrameMapping, TranslateResult},
+    self, FrameAllocator as X86_64FrameAllocatorTrait, MappedPageTable, Mapper, OffsetPageTable,
+    Page, PageTableFlags, PhysFrame, Size1GiB, Size2MiB, Size4KiB, Translate,
+    mapper::{MapToError, MappedFrame, PageTableFrameMapping, TranslateResult},
 };
 
 // ---------------------------------------------------------------------------
@@ -72,6 +75,51 @@ impl PageSize for X86_64PageSizeWithGiB {
 }
 
 // ---------------------------------------------------------------------------
+// Inactive page table wrapper
+// ---------------------------------------------------------------------------
+
+/// A wrapper asserting that the contained page table is **not** the
+/// currently active one.
+///
+/// This is the type that implements [`PageTable`]. Construct it via
+/// [`InactivePageTable::new`] to assert the safety invariant.
+///
+/// `T` is typically [`OffsetPageTable`] or [`MappedPageTable`].
+pub struct InactivePageTable<T>(T);
+
+impl<T> InactivePageTable<T> {
+    /// Wrap a page table mapper, asserting it is not currently active.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that `inner` operates on a page table
+    /// hierarchy that is **not** loaded into any CPU's CR3 register.
+    /// Modifying the active page table can cause immediate undefined
+    /// behavior.
+    pub unsafe fn new(inner: T) -> Self {
+        Self(inner)
+    }
+
+    /// Unwrap and return the inner mapper.
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> Deref for InactivePageTable<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for InactivePageTable<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Flag conversion helpers
 // ---------------------------------------------------------------------------
 
@@ -98,14 +146,14 @@ fn from_x86_64_flags(flags: PageTableFlags) -> PageFlags {
 fn map_to_error<S: paging::PageSize>(e: MapToError<S>) -> MapError {
     match e {
         MapToError::FrameAllocationFailed => MapError::FrameAllocationFailed,
-        MapToError::ParentEntryHugePage => MapError::ParentEntryHugePage,
+        MapToError::ParentEntryHugePage => MapError::UnsupportedPageSize,
         MapToError::PageAlreadyMapped(_) => MapError::AlreadyMapped,
     }
 }
 
 fn convert_unmap_error(e: paging::mapper::UnmapError) -> UnmapError {
     match e {
-        paging::mapper::UnmapError::ParentEntryHugePage => UnmapError::ParentEntryHugePage,
+        paging::mapper::UnmapError::ParentEntryHugePage => UnmapError::UnsupportedPageSize,
         paging::mapper::UnmapError::PageNotMapped => UnmapError::NotMapped,
         paging::mapper::UnmapError::InvalidFrameAddress(_) => UnmapError::NotMapped,
     }
@@ -117,8 +165,7 @@ fn convert_unmap_error(e: paging::mapper::UnmapError) -> UnmapError {
 
 /// Parent table flags: present + writable to support recursive page tables.
 /// See <https://github.com/rust-osdev/bootloader/issues/443#issuecomment-2130010621>
-const PARENT_FLAGS: PageTableFlags =
-    PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
+const PARENT_FLAGS: PageTableFlags = PageTableFlags::PRESENT.union(PageTableFlags::WRITABLE);
 
 /// Map a single page of compile-time size `S` (one of the x86_64 crate's
 /// `Size4KiB`, `Size2MiB`, `Size1GiB`).
@@ -165,7 +212,11 @@ fn translate_frame(
 ) -> Option<(PhysAddr, PageFlags, MappedFrame)> {
     let addr = x86_64::VirtAddr::new(virt.as_u64());
     match translator.translate(addr) {
-        TranslateResult::Mapped { frame, offset: _, flags } => {
+        TranslateResult::Mapped {
+            frame,
+            offset: _,
+            flags,
+        } => {
             let phys = match frame {
                 MappedFrame::Size4KiB(f) => f.start_address().as_u64(),
                 MappedFrame::Size2MiB(f) => f.start_address().as_u64(),
@@ -193,7 +244,9 @@ fn update_flags_impl(
             .update_flags(page, x86_64_flags)
             .map_err(|e| match e {
                 paging::mapper::FlagUpdateError::PageNotMapped => MapError::NotMapped,
-                paging::mapper::FlagUpdateError::ParentEntryHugePage => MapError::ParentEntryHugePage,
+                paging::mapper::FlagUpdateError::ParentEntryHugePage => {
+                    MapError::UnsupportedPageSize
+                }
             })?
             .ignore();
     }
@@ -224,7 +277,9 @@ unsafe impl<S: PageSize> X86_64FrameAllocatorTrait<Size4KiB> for FrameAllocAdapt
 
 macro_rules! impl_page_table_2m {
     ($mapper:ty $(, $generics:tt : $bound:path)*) => {
-        impl<$($generics: $bound),*> PageTable<X86_64PageSize> for $mapper {
+        // SAFETY: The `InactivePageTable` wrapper's constructor requires the
+        // caller to guarantee that the page table is not currently active.
+        unsafe impl<$($generics: $bound),*> PageTable<X86_64PageSize> for InactivePageTable<$mapper> {
             fn map(
                 &mut self,
                 virt: VirtAddr,
@@ -235,40 +290,44 @@ macro_rules! impl_page_table_2m {
             ) -> Result<(), MapError> {
                 let x86_64_flags = to_x86_64_flags(flags);
                 let mut adapter = FrameAllocAdapter(allocator);
+                let mapper = &mut **self;
                 match page_size {
                     X86_64PageSize::Size4KiB => {
-                        map_size::<Size4KiB>(self, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
+                        map_size::<Size4KiB>(mapper, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
                     }
                     X86_64PageSize::Size2MiB => {
-                        map_size::<Size2MiB>(self, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
+                        map_size::<Size2MiB>(mapper, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
                     }
                 }
             }
 
             fn update_flags(&mut self, virt: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
-                update_flags_impl(self, virt, flags)
+                update_flags_impl(&mut **self, virt, flags)
             }
 
             fn unmap(&mut self, virt: VirtAddr) -> Result<(PhysAddr, X86_64PageSize), UnmapError> {
-                let (_, _, frame) = translate_frame(self, virt)
+                let (_, _, frame) = translate_frame(&**self, virt)
                     .ok_or(UnmapError::NotMapped)?;
+                let mapper = &mut **self;
                 match frame {
                     MappedFrame::Size4KiB(_) => {
-                        unmap_size::<Size4KiB>(self, virt)
+                        unmap_size::<Size4KiB>(mapper, virt)
                             .map(|p| (p, X86_64PageSize::Size4KiB))
                     }
-                    MappedFrame::Size2MiB(_) | MappedFrame::Size1GiB(_) => {
-                        unmap_size::<Size2MiB>(self, virt)
+                    MappedFrame::Size2MiB(_) => {
+                        unmap_size::<Size2MiB>(mapper, virt)
                             .map(|p| (p, X86_64PageSize::Size2MiB))
                     }
+                    MappedFrame::Size1GiB(_) => Err(UnmapError::UnsupportedPageSize),
                 }
             }
 
             fn translate(&self, virt: VirtAddr) -> Option<(PhysAddr, PageFlags, X86_64PageSize)> {
-                let (phys, flags, frame) = translate_frame(self, virt)?;
+                let (phys, flags, frame) = translate_frame(&**self, virt)?;
                 let size = match frame {
                     MappedFrame::Size4KiB(_) => X86_64PageSize::Size4KiB,
-                    MappedFrame::Size2MiB(_) | MappedFrame::Size1GiB(_) => X86_64PageSize::Size2MiB,
+                    MappedFrame::Size2MiB(_) => X86_64PageSize::Size2MiB,
+                    MappedFrame::Size1GiB(_) => return None,
                 };
                 Some((phys, flags, size))
             }
@@ -285,7 +344,9 @@ impl_page_table_2m!(MappedPageTable<'_, F>, F: PageTableFrameMapping);
 
 macro_rules! impl_page_table_1g {
     ($mapper:ty $(, $generics:tt : $bound:path)*) => {
-        impl<$($generics: $bound),*> PageTable<X86_64PageSizeWithGiB> for $mapper {
+        // SAFETY: The `InactivePageTable` wrapper's constructor requires the
+        // caller to guarantee that the page table is not currently active.
+        unsafe impl<$($generics: $bound),*> PageTable<X86_64PageSizeWithGiB> for InactivePageTable<$mapper> {
             fn map(
                 &mut self,
                 virt: VirtAddr,
@@ -296,44 +357,46 @@ macro_rules! impl_page_table_1g {
             ) -> Result<(), MapError> {
                 let x86_64_flags = to_x86_64_flags(flags);
                 let mut adapter = FrameAllocAdapter(allocator);
+                let mapper = &mut **self;
                 match page_size {
                     X86_64PageSizeWithGiB::Size4KiB => {
-                        map_size::<Size4KiB>(self, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
+                        map_size::<Size4KiB>(mapper, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
                     }
                     X86_64PageSizeWithGiB::Size2MiB => {
-                        map_size::<Size2MiB>(self, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
+                        map_size::<Size2MiB>(mapper, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
                     }
                     X86_64PageSizeWithGiB::Size1GiB => {
-                        map_size::<Size1GiB>(self, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
+                        map_size::<Size1GiB>(mapper, virt, phys, x86_64_flags, PARENT_FLAGS, &mut adapter)
                     }
                 }
             }
 
             fn update_flags(&mut self, virt: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
-                update_flags_impl(self, virt, flags)
+                update_flags_impl(&mut **self, virt, flags)
             }
 
             fn unmap(&mut self, virt: VirtAddr) -> Result<(PhysAddr, X86_64PageSizeWithGiB), UnmapError> {
-                let (_, _, frame) = translate_frame(self, virt)
+                let (_, _, frame) = translate_frame(&**self, virt)
                     .ok_or(UnmapError::NotMapped)?;
+                let mapper = &mut **self;
                 match frame {
                     MappedFrame::Size4KiB(_) => {
-                        unmap_size::<Size4KiB>(self, virt)
+                        unmap_size::<Size4KiB>(mapper, virt)
                             .map(|p| (p, X86_64PageSizeWithGiB::Size4KiB))
                     }
                     MappedFrame::Size2MiB(_) => {
-                        unmap_size::<Size2MiB>(self, virt)
+                        unmap_size::<Size2MiB>(mapper, virt)
                             .map(|p| (p, X86_64PageSizeWithGiB::Size2MiB))
                     }
                     MappedFrame::Size1GiB(_) => {
-                        unmap_size::<Size1GiB>(self, virt)
+                        unmap_size::<Size1GiB>(mapper, virt)
                             .map(|p| (p, X86_64PageSizeWithGiB::Size1GiB))
                     }
                 }
             }
 
             fn translate(&self, virt: VirtAddr) -> Option<(PhysAddr, PageFlags, X86_64PageSizeWithGiB)> {
-                let (phys, flags, frame) = translate_frame(self, virt)?;
+                let (phys, flags, frame) = translate_frame(&**self, virt)?;
                 let size = match frame {
                     MappedFrame::Size4KiB(_) => X86_64PageSizeWithGiB::Size4KiB,
                     MappedFrame::Size2MiB(_) => X86_64PageSizeWithGiB::Size2MiB,

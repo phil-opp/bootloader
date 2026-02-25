@@ -4,7 +4,7 @@
 //! and provides [`X86_64FrameAllocator`] which wraps the bootloader's
 //! [`LegacyFrameAllocator`](crate::legacy_memory_region::LegacyFrameAllocator).
 
-pub use kernel_elf_loader::x86_64::{X86_64PageSize, X86_64PageSizeWithGiB};
+pub use kernel_elf_loader::x86_64::{InactivePageTable, X86_64PageSize, X86_64PageSizeWithGiB};
 
 use kernel_elf_loader::{self as kel, PhysAddr};
 use x86_64::structures::paging::{

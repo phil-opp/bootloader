@@ -308,9 +308,7 @@ impl<'a, S: PageSize> Loader<'a, S> {
                 .ok_or(LoadError::FrameAllocationFailed)?;
 
             // Zero the frame.
-            unsafe {
-                self.phys_mem.zero_phys(frame, base_size as usize);
-            }
+            self.phys_mem.zero_phys(frame, base_size as usize);
 
             self.page_table
                 .map(virt, frame, S::BASE, flags, self.allocator)

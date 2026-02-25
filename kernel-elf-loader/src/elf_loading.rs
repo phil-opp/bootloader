@@ -244,19 +244,15 @@ fn handle_bss_section<S: PageSize>(
         let new_phys = allocator
             .allocate_frame(S::BASE)
             .ok_or(LoadError::FrameAllocationFailed)?;
-        unsafe {
-            phys_mem.copy_phys(old_phys, new_phys, base_size as usize);
-        }
+        phys_mem.copy_phys(old_phys, new_phys, base_size as usize);
 
         // Zero the BSS portion of the new frame.
         let zero_offset = data_bytes_before_zero as usize;
         let zero_len = (base_size - data_bytes_before_zero) as usize;
-        unsafe {
-            phys_mem.zero_phys(
-                PhysAddr::new(new_phys.as_u64() + zero_offset as u64),
-                zero_len,
-            );
-        }
+        phys_mem.zero_phys(
+            PhysAddr::new(new_phys.as_u64() + zero_offset as u64),
+            zero_len,
+        );
 
         // Remap to the new frame.
         page_table
@@ -280,9 +276,7 @@ fn handle_bss_section<S: PageSize>(
                 .ok_or(LoadError::FrameAllocationFailed)?;
 
             // Zero the frame.
-            unsafe {
-                phys_mem.zero_phys(frame, base_size as usize);
-            }
+            phys_mem.zero_phys(frame, base_size as usize);
 
             page_table
                 .map(virt, frame, S::BASE, flags, allocator)

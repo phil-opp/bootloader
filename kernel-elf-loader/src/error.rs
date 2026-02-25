@@ -53,9 +53,9 @@ pub enum MapError {
     InvalidAddress,
     /// The page is not mapped (for update_flags).
     NotMapped,
-    /// A parent page table entry is a huge page, so the mapping
-    /// cannot be created at the requested granularity.
-    ParentEntryHugePage,
+    /// The page uses an unsupported page size (e.g. a huge page that
+    /// cannot be handled at the requested granularity).
+    UnsupportedPageSize,
 }
 
 /// Errors from page table unmap operations.
@@ -63,9 +63,9 @@ pub enum MapError {
 pub enum UnmapError {
     /// The page is not mapped.
     NotMapped,
-    /// A parent page table entry is a huge page, so the page
-    /// cannot be unmapped individually.
-    ParentEntryHugePage,
+    /// The page uses an unsupported page size (e.g. a huge page that
+    /// cannot be unmapped at the requested granularity).
+    UnsupportedPageSize,
 }
 
 impl core::fmt::Display for MapError {
@@ -75,7 +75,7 @@ impl core::fmt::Display for MapError {
             Self::FrameAllocationFailed => write!(f, "frame allocation failed"),
             Self::InvalidAddress => write!(f, "invalid address alignment"),
             Self::NotMapped => write!(f, "page not mapped"),
-            Self::ParentEntryHugePage => write!(f, "parent entry is a huge page"),
+            Self::UnsupportedPageSize => write!(f, "unsupported page size"),
         }
     }
 }
@@ -84,7 +84,7 @@ impl core::fmt::Display for UnmapError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotMapped => write!(f, "page not mapped"),
-            Self::ParentEntryHugePage => write!(f, "parent entry is a huge page"),
+            Self::UnsupportedPageSize => write!(f, "unsupported page size"),
         }
     }
 }

@@ -2,7 +2,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::legacy_memory_region::{LegacyFrameAllocator, LegacyMemoryRegion};
-use crate::x86_bridge::{X86_64FrameAllocator, X86_64PageSize};
+use crate::x86_bridge::{InactivePageTable, X86_64FrameAllocator, X86_64PageSize};
 use kernel_elf_loader::IdentityMappedAccess;
 use bootloader_api::{
     BootInfo, BootloaderConfig,
@@ -735,7 +735,10 @@ pub struct PageTables {
     /// Provides access to the page tables of the bootloader address space.
     pub bootloader: OffsetPageTable<'static>,
     /// Provides access to the page tables of the kernel address space (not active).
-    pub kernel: OffsetPageTable<'static>,
+    ///
+    /// Wrapped in [`InactivePageTable`] to enforce the invariant that this
+    /// page table is not currently loaded into CR3.
+    pub kernel: InactivePageTable<OffsetPageTable<'static>>,
     /// The physical frame where the level 4 page table of the kernel address space is stored.
     ///
     /// Must be the page table that the `kernel` field of this struct refers to.

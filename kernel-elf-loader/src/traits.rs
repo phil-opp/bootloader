@@ -119,7 +119,14 @@ pub trait FrameAllocator<S: PageSize> {
 ///
 /// All operations work on the **kernel's** page table (not the currently
 /// active one). Generic over the platform's page size type.
-pub trait PageTable<S: PageSize> {
+///
+/// # Safety
+///
+/// Implementors must guarantee that the page table represented by
+/// this type is **not** the currently active page table. Modifying
+/// the active page table can cause immediate undefined behavior
+/// (e.g. invalidating the mapping the CPU is executing from).
+pub unsafe trait PageTable<S: PageSize> {
     /// Map a virtual page to a physical frame.
     ///
     /// `virt` and `phys` must be aligned to `page_size.bytes()`.
@@ -153,28 +160,26 @@ pub trait PageTable<S: PageSize> {
 /// In a typical identity-mapped bootloader, `phys_addr == virt_addr`,
 /// so these are trivial pointer dereferences. This trait exists so
 /// the loader doesn't hard-code that assumption.
-pub trait PhysicalMemoryAccess {
+///
+/// # Safety
+///
+/// Implementors must guarantee that **all valid physical addresses**
+/// (i.e., addresses returned by [`FrameAllocator::allocate_frame`] or
+/// obtained via [`PageTable::translate`]) are accessible through this
+/// trait's methods. The loader will only ever pass such addresses to
+/// these methods.
+pub unsafe trait PhysicalMemoryAccess {
     /// Read `buf.len()` bytes from physical address `addr` into `buf`.
-    ///
-    /// # Safety
-    /// The caller must ensure that the physical address range is valid and mapped.
-    unsafe fn read_phys(&self, addr: PhysAddr, buf: &mut [u8]);
+    fn read_phys(&self, addr: PhysAddr, buf: &mut [u8]);
 
     /// Write `buf.len()` bytes from `buf` to physical address `addr`.
-    ///
-    /// # Safety
-    /// The caller must ensure that the physical address range is valid and mapped.
-    unsafe fn write_phys(&self, addr: PhysAddr, buf: &[u8]);
+    fn write_phys(&self, addr: PhysAddr, buf: &[u8]);
 
     /// Zero `len` bytes at physical address `addr`.
-    ///
-    /// # Safety
-    /// The caller must ensure that the physical address range is valid and mapped.
-    unsafe fn zero_phys(&self, addr: PhysAddr, len: usize);
+    fn zero_phys(&self, addr: PhysAddr, len: usize);
 
     /// Copy `len` bytes from physical address `src` to `dst`.
     ///
-    /// # Safety
-    /// The caller must ensure that both physical address ranges are valid and mapped.
-    unsafe fn copy_phys(&self, src: PhysAddr, dst: PhysAddr, len: usize);
+    /// The source and destination ranges must not overlap.
+    fn copy_phys(&self, src: PhysAddr, dst: PhysAddr, len: usize);
 }

@@ -455,7 +455,10 @@ fn create_page_tables(
 
     bootloader_x86_64_common::PageTables {
         bootloader: bootloader_page_table,
-        kernel: kernel_page_table,
+        // SAFETY: kernel_page_table was just created and is not loaded into CR3.
+        kernel: unsafe {
+            bootloader_x86_64_common::x86_bridge::InactivePageTable::new(kernel_page_table)
+        },
         kernel_level_4_frame,
     }
 }
