@@ -2,7 +2,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use crate::legacy_memory_region::{LegacyFrameAllocator, LegacyMemoryRegion};
-use crate::x86_bridge::{IdentityMappedAccess, X86FrameAllocator, X86PageSize, X86PageTable};
+use crate::x86_bridge::{X86FrameAllocator, X86PageSize, X86PageTable};
+use kernel_elf_loader::IdentityMappedAccess;
 use bootloader_api::{
     BootInfo, BootloaderConfig,
     config::Mapping,

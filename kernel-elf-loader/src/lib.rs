@@ -28,6 +28,7 @@ pub mod address_space;
 pub mod error;
 pub mod traits;
 
+pub mod identity_mapped;
 mod elf_loading;
 mod relocation;
 
@@ -37,6 +38,7 @@ pub mod loader;
 pub use address_space::AddressSpace;
 pub use error::{LoadError, MapError, UnmapError};
 pub use loader::{KernelPlacement, Loader, RegionPlacement};
+pub use identity_mapped::IdentityMappedAccess;
 pub use traits::{FrameAllocator, PageFlags, PageSize, PageTable, PhysAddr, PhysicalMemoryAccess, VirtAddr};
 
 /// Result of loading a kernel ELF.
